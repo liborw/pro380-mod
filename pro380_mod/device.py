@@ -2,7 +2,11 @@
 import struct
 import socket
 import logging
+from dataclasses import dataclass
 from pymodbus.utilities import computeCRC, checkCRC
+from typing import Callable,Any
+from functools import partial
+
 
 
 log = logging.getLogger()
@@ -11,6 +15,42 @@ logging.basicConfig(level=logging.INFO)
 
 def to_hex(b: bytes):
     return ' '.join(format(x, "02x") for x in b)
+
+
+@dataclass
+class Command():
+    command: int
+    register: int
+    size: int
+    convert: Callable[[bytes], Any]
+
+def hex_to_str(data:bytes) -> str:
+    return "0x" + ''.join(format(x, "02x") for x in data)
+
+
+def single_value(fmt: str, data: bytes) -> Any:
+    return struct.unpack(fmt, data)[0]
+
+
+def multiple_values(fmt: str, data: bytes) -> Any:
+    return struct.unpack(fmt, data)
+
+
+def into_int(data: bytes) -> int:
+    int.from_bytes(data, byteorder='big')
+
+
+SERIAL_NUMBER = Command(0x03, 0x1000, 4, hex_to_str)
+METER_CODE = Command(0x03, 0x1010, 2, hex_to_str)
+METER_ID = Command(0x03, 0x1018, 2, hex_to_str)
+BAUD_RATE = Command(0x03, 0x1020, 2, into_int)
+PROTOCOL_VERSION = Command(0x03, 0x1050, 4, single_value(">f"))
+SOFTWARE_VERSION = Command(0x03, 0x1054, 4, single_value(">f"))
+HARDWARE_VERSION = Command(0x03, 0x1058, 4, single_value(">f"))
+METER_AMPS = Command(0x03, 0x1060, 2, into_int)
+CT_RATE = Command(0x03, 0x1062, 2, into_int)
+
+TOTAL_ACTIVE_POWER = Command(0x03, 0x2080, 4, single_value(">f"))
 
 
 class Device():
@@ -24,7 +64,9 @@ class Device():
         self.sock.close()
 
     def read(self, register:int, size:int) -> bytes:
-        msg = self.dev_id.to_bytes(1) + b"\x03" + register.to_bytes(2) + size.to_bytes(2)
+        msg = self.dev_id.to_bytes(1) + b"\x03" \
+              + register.to_bytes(2) \
+              + (size / 2).to_bytes(2)
         msg = msg + computeCRC(msg).to_bytes(2)
         log.debug(" send: " + to_hex(msg))
         self.sock.send(msg)
@@ -36,35 +78,27 @@ class Device():
 
         return data[3:-2]
 
-    def read_grid_frequency(self) -> float:
-        data = self.read(0x2020, 2)
-        return struct.unpack(">f", data)[0]
+    def cmd(self, cmd: Command) -> Any:
+        data = self.read(cmd.register, cmd.size)
+        return cmd.convert(data)
 
-    def read_voltage(self) -> list[float]:
-        data = self.read(0x2008, 6)
-        return struct.unpack(">fff", data)
 
-    def read_current(self) -> list[float]:
-        data = self.read(0x2068, 6)
-        return struct.unpack(">fff", data)
 
-    def read_total_active_energy(self) -> float:
-        data = self.read(0x2080, 2)
-        return struct.unpack(">f", data)[0]
+
+
 
 
 
 
 dev = Device("192.168.88.22")
 
-dev.read(0x1010, 1)
-print("grid frequency: {} Hz".format(dev.read_grid_frequency()))
-print("voltage: {} V".format(dev.read_voltage()))
-print("current: {} A".format(dev.read_current()))
+print("serial number: {} Hz".format(dev.cmd(SERIAL_NUMBER)))
+print("meter code: {}".format(dev.cmd(METER_CODE)))
+
 
 try:
     while True:
-        print("{} kWh".format(dev.read_total_active_energy()))
+        print("{} kWh".format(dev.cmd(TOTAL_ACTIVE_POWER)))
 except KeyboardInterrupt:
     pass
 finally:
